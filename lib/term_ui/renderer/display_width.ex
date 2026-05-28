@@ -27,12 +27,27 @@ defmodule TermUI.Renderer.DisplayWidth do
   """
   @spec width(String.t()) :: non_neg_integer()
   def width(grapheme) when is_binary(grapheme) do
+    # A grapheme cluster's display width is NOT the sum of its codepoint
+    # widths: paired regional indicators (🇺🇸 = two W codepoints), ZWJ
+    # sequences (👨‍👩‍👧 = several W codepoints + ZWJ), skin-tone modifiers
+    # (👨🏻 = base + Fitzpatrick) and keycap sequences (1️⃣ = digit + VS16 +
+    # combining keycap) all render as a single 2-column glyph. Summing
+    # codepoint widths would report 4, 6, 4, and 3 respectively. We instead
+    # promote the whole cluster to width 2 if any codepoint is Wide or is
+    # VS16 (which forces emoji presentation), and otherwise take the max
+    # so combining-only clusters keep their zero width.
     grapheme
     |> String.to_charlist()
-    |> Enum.reduce(0, fn codepoint, acc ->
-      acc + char_width(codepoint)
+    |> Enum.reduce_while(0, fn
+      0xFE0F, _ ->
+        {:halt, 2}
+
+      codepoint, max_acc ->
+        case char_width(codepoint) do
+          2 -> {:halt, 2}
+          w -> {:cont, max(max_acc, w)}
+        end
     end)
-    |> max(0)
   end
 
   @doc """
@@ -164,6 +179,13 @@ defmodule TermUI.Renderer.DisplayWidth do
   end
 
   # Private character width calculation
+  #
+  # Clause order matters: BEAM matches clauses sequentially, so the most
+  # common codepoints (printable ASCII) MUST be matched first or every
+  # character pays for traversing the entire wide-character table.
+
+  # Printable ASCII fast-path — the dominant case for TUI text.
+  defp char_width(c) when c >= 32 and c <= 126, do: 1
 
   # Control characters and NULL
   defp char_width(c) when c < 32, do: 0
@@ -192,7 +214,50 @@ defmodule TermUI.Renderer.DisplayWidth do
   # Zero Width No-Break Space (BOM)
   defp char_width(0xFEFF), do: 0
 
-  # East Asian Wide characters (W and F categories)
+  # East Asian Wide / Fullwidth characters, per Unicode 15.1 EastAsianWidth.txt.
+  # Ordered by codepoint for readability — the printable-ASCII clause above
+  # is what keeps this table off the hot path.
+
+  # Misc Technical: WATCH, HOURGLASS, angle brackets
+  defp char_width(c) when c >= 0x231A and c <= 0x231B, do: 2
+  defp char_width(c) when c >= 0x2329 and c <= 0x232A, do: 2
+  # Misc Technical: media controls, alarm clock, hourglass with flowing sand
+  defp char_width(c) when c >= 0x23E9 and c <= 0x23EC, do: 2
+  defp char_width(0x23F0), do: 2
+  defp char_width(0x23F3), do: 2
+  # Geometric Shapes: medium small squares
+  defp char_width(c) when c >= 0x25FD and c <= 0x25FE, do: 2
+  # Misc Symbols: scattered Wide chars in 0x2600-0x26FF
+  defp char_width(c) when c >= 0x2614 and c <= 0x2615, do: 2
+  defp char_width(c) when c >= 0x2648 and c <= 0x2653, do: 2
+  defp char_width(0x267F), do: 2
+  defp char_width(0x2693), do: 2
+  defp char_width(0x26A1), do: 2
+  defp char_width(c) when c >= 0x26AA and c <= 0x26AB, do: 2
+  defp char_width(c) when c >= 0x26BD and c <= 0x26BE, do: 2
+  defp char_width(c) when c >= 0x26C4 and c <= 0x26C5, do: 2
+  defp char_width(0x26CE), do: 2
+  defp char_width(0x26D4), do: 2
+  defp char_width(0x26EA), do: 2
+  defp char_width(c) when c >= 0x26F2 and c <= 0x26F3, do: 2
+  defp char_width(0x26F5), do: 2
+  defp char_width(0x26FA), do: 2
+  defp char_width(0x26FD), do: 2
+  # Dingbats: scattered Wide chars in 0x2700-0x27BF (✅, ❌, ❗, ➡, etc.)
+  defp char_width(0x2705), do: 2
+  defp char_width(c) when c >= 0x270A and c <= 0x270B, do: 2
+  defp char_width(0x2728), do: 2
+  defp char_width(0x274C), do: 2
+  defp char_width(0x274E), do: 2
+  defp char_width(c) when c >= 0x2753 and c <= 0x2755, do: 2
+  defp char_width(0x2757), do: 2
+  defp char_width(c) when c >= 0x2795 and c <= 0x2797, do: 2
+  defp char_width(0x27B0), do: 2
+  defp char_width(0x27BF), do: 2
+  # Misc Symbols and Arrows: large squares and stars
+  defp char_width(c) when c >= 0x2B1B and c <= 0x2B1C, do: 2
+  defp char_width(0x2B50), do: 2
+  defp char_width(0x2B55), do: 2
   # CJK Radicals Supplement through Ideographic Description
   defp char_width(c) when c >= 0x2E80 and c <= 0x2FFF, do: 2
   # CJK Symbols and Punctuation, Hiragana, Katakana
@@ -214,17 +279,31 @@ defmodule TermUI.Renderer.DisplayWidth do
   # Fullwidth Forms
   defp char_width(c) when c >= 0xFF01 and c <= 0xFF60, do: 2
   defp char_width(c) when c >= 0xFFE0 and c <= 0xFFE6, do: 2
-  # CJK Unified Ideographs Extension B-F and beyond
+  # Enclosed Alphanumeric / Ideographic Supplement (squared letters, parens CJK)
+  defp char_width(0x1F004), do: 2
+  defp char_width(0x1F0CF), do: 2
+  defp char_width(0x1F18E), do: 2
+  defp char_width(c) when c >= 0x1F191 and c <= 0x1F19A, do: 2
+  defp char_width(c) when c >= 0x1F1E6 and c <= 0x1F1FF, do: 2
+  # Enclosed Ideographic Supplement — only the W subranges; the rest of
+  # 0x1F200..0x1F2FF is unassigned and would render as 1-col tofu.
+  defp char_width(c) when c >= 0x1F200 and c <= 0x1F202, do: 2
+  defp char_width(c) when c >= 0x1F210 and c <= 0x1F23B, do: 2
+  defp char_width(c) when c >= 0x1F240 and c <= 0x1F248, do: 2
+  defp char_width(c) when c >= 0x1F250 and c <= 0x1F251, do: 2
+  defp char_width(c) when c >= 0x1F260 and c <= 0x1F265, do: 2
+  # Miscellaneous Symbols and Pictographs, Emoticons, Transport, Supplemental
+  defp char_width(c) when c >= 0x1F300 and c <= 0x1F64F, do: 2
+  defp char_width(c) when c >= 0x1F680 and c <= 0x1F6FF, do: 2
+  # Geometric Shapes Extended: colored circles and squares (🟡 🟢 🔴 🟦 etc.)
+  defp char_width(c) when c >= 0x1F7E0 and c <= 0x1F7EB, do: 2
+  defp char_width(0x1F7F0), do: 2
+  defp char_width(c) when c >= 0x1F900 and c <= 0x1F9FF, do: 2
+  # Symbols and Pictographs Extended-A (newer emoji added through Unicode 15.x)
+  defp char_width(c) when c >= 0x1FA70 and c <= 0x1FAFF, do: 2
+  # CJK Unified Ideographs Extension B-G and beyond
   defp char_width(c) when c >= 0x20000 and c <= 0x2FFFF, do: 2
   defp char_width(c) when c >= 0x30000 and c <= 0x3FFFF, do: 2
-
-  # Emoji (most are wide)
-  # Miscellaneous Symbols and Pictographs
-  defp char_width(c) when c >= 0x1F300 and c <= 0x1F64F, do: 2
-  # Emoticons
-  defp char_width(c) when c >= 0x1F680 and c <= 0x1F6FF, do: 2
-  # Transport and Map Symbols, Supplemental Symbols
-  defp char_width(c) when c >= 0x1F900 and c <= 0x1F9FF, do: 2
 
   # Default: single width
   defp char_width(_), do: 1

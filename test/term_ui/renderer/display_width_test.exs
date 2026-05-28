@@ -159,6 +159,61 @@ defmodule TermUI.Renderer.DisplayWidthTest do
       assert DisplayWidth.width("🤖") == 2
     end
 
+    test "dingbats with East Asian Wide property" do
+      # Scattered in 0x2700-0x27BF; the table cells in the screenshot bug
+      # used these and rendered as single-width before this fix.
+      assert DisplayWidth.width("✅") == 2
+      assert DisplayWidth.width("❌") == 2
+      assert DisplayWidth.width("❗") == 2
+      assert DisplayWidth.width("➡") == 1
+    end
+
+    test "geometric shapes extended (colored circles and squares)" do
+      assert DisplayWidth.width("🟡") == 2
+      assert DisplayWidth.width("🟢") == 2
+      assert DisplayWidth.width("🔴") == 2
+      assert DisplayWidth.width("🟦") == 2
+    end
+
+    test "scattered wide chars in Misc Symbols (0x2600-0x26FF)" do
+      assert DisplayWidth.width("⌚") == 2
+      assert DisplayWidth.width("☔") == 2
+      assert DisplayWidth.width("⚡") == 2
+      assert DisplayWidth.width("⚪") == 2
+    end
+
+    test "regional indicators (flag halves)" do
+      assert DisplayWidth.width("🇺") == 2
+      assert DisplayWidth.width("🇸") == 2
+    end
+
+    test "paired regional indicators render as a single flag (width 2)" do
+      # 🇺🇸 is one grapheme of two W codepoints; per-codepoint summing
+      # would report 4 and shift every column to its right.
+      assert DisplayWidth.width("🇺🇸") == 2
+      assert DisplayWidth.width("🇯🇵") == 2
+      assert DisplayWidth.width("🇬🇧") == 2
+    end
+
+    test "ZWJ emoji sequences (family, professions) are width 2" do
+      # Several W emoji glued with ZWJ codepoints; summing would report 6+.
+      assert DisplayWidth.width("👨‍👩‍👧") == 2
+      assert DisplayWidth.width("👨‍💻") == 2
+    end
+
+    test "skin-tone modifier sequences are width 2" do
+      # base emoji + Fitzpatrick modifier (both W). Summing would report 4.
+      assert DisplayWidth.width("👨🏻") == 2
+      assert DisplayWidth.width("👋🏽") == 2
+    end
+
+    test "VS16 forces emoji presentation to width 2" do
+      # 1️⃣ keycap: ASCII digit + VS16 + COMBINING ENCLOSING KEYCAP.
+      assert DisplayWidth.width("1️⃣") == 2
+      # ℹ️ info: text-default base + VS16 → emoji presentation.
+      assert DisplayWidth.width("ℹ️") == 2
+    end
+
     test "Latin extended characters are single-width" do
       # Accented characters (precomposed)
       assert DisplayWidth.width("é") == 1
@@ -254,6 +309,14 @@ defmodule TermUI.Renderer.DisplayWidthTest do
 
     test "only combining characters" do
       assert DisplayWidth.string_width("\u0301\u0302\u0303") == 0
+    end
+
+    test "string containing flag emojis" do
+      # "Hi \ud83c\uddfa\ud83c\uddf8 \ud83c\uddef\ud83c\uddf5" = "Hi " (3) + flag (2) + " " (1) + flag (2) = 8.
+      # Built via <> so the formatter can't wrap the line and mangle the
+      # astral-plane codepoints into invalid surrogate \u escapes.
+      str = "Hi " <> "\u{1F1FA}\u{1F1F8}" <> " " <> "\u{1F1EF}\u{1F1F5}"
+      assert DisplayWidth.string_width(str) == 8
     end
   end
 

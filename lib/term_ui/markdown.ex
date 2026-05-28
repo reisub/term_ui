@@ -12,8 +12,16 @@ defmodule TermUI.Markdown do
       iex> result = TermUI.Markdown.render_with_elements("```elixir\\ndef hello, do: :world\\n```", 80)
   """
 
+  alias TermUI.CharacterSet
   alias TermUI.Component.RenderNode
+  alias TermUI.Renderer.DisplayWidth
   alias TermUI.Renderer.Style
+
+  # GitHub-Flavored Markdown extensions: strikethrough (~~text~~), tables,
+  # task lists ([x]/[ ]), and autolinks. Matches how most LLM and assistant
+  # outputs format markdown. Callers that want vanilla CommonMark can pass
+  # `gfm: false`.
+  @gfm_mdex_opts [extension: [strikethrough: true, table: true, tasklist: true, autolink: true]]
 
   @type styled_segment :: {String.t(), Style.t() | nil}
   @type styled_line :: [styled_segment]
@@ -47,14 +55,17 @@ defmodule TermUI.Markdown do
   @link_style Style.new(fg: :blue, attrs: [:underline])
   @list_bullet_style Style.new(fg: :cyan)
   @hr_style Style.new(fg: :bright_black)
+  @strikethrough_style Style.new(attrs: [:strikethrough])
+  @task_marker_style Style.new(fg: :cyan)
 
   # Dialyzer: Pattern match coverage warnings
   @dialyzer {:nowarn_function,
              render: 2,
+             render: 3,
              render_with_elements: 3,
              render_line_to_node: 1,
-             process_document: 1,
-             process_document_with_elements: 2}
+             process_document: 2,
+             process_document_with_elements: 3}
 
   # Syntax highlighting token styles
   @token_styles %{
@@ -112,37 +123,93 @@ defmodule TermUI.Markdown do
     "iex" => Makeup.Lexers.ElixirLexer,
     "erlang" => Makeup.Lexers.ErlangLexer,
     "erl" => Makeup.Lexers.ErlangLexer,
-    "hrl" => Makeup.Lexers.ErlangLexer
+    "hrl" => Makeup.Lexers.ErlangLexer,
+    "eex" => Makeup.Lexers.EExLexer,
+    "heex" => Makeup.Lexers.HEExLexer,
+    "html" => Makeup.Lexers.HTMLLexer,
+    "htm" => Makeup.Lexers.HTMLLexer,
+    "css" => MakeupCSS.Lexer,
+    "json" => Makeup.Lexers.JsonLexer,
+    "diff" => Makeup.Lexers.DiffLexer,
+    "patch" => Makeup.Lexers.DiffLexer,
+    "ts" => MakeupTS.Lexer,
+    "typescript" => MakeupTS.Lexer,
+    "tsx" => MakeupTS.Lexer,
+    "js" => MakeupTS.Lexer,
+    "javascript" => MakeupTS.Lexer,
+    "jsx" => MakeupTS.Lexer,
+    "sql" => MakeupSql,
+    "c" => Makeup.Lexers.CLexer,
+    "h" => Makeup.Lexers.CLexer,
+    "rust" => Makeup.Lexers.RustLexer,
+    "rs" => Makeup.Lexers.RustLexer
   }
 
   @doc """
   Renders markdown content as a list of styled lines.
+
+  ## Options
+
+  * `:compact` — when `true`, strips blank separator rows so blocks render
+    adjacently. Default `false` (one blank row after every block, matching
+    historical behaviour). Useful for embedding markdown into a denser host
+    layout (e.g. chat scrollback) that supplies its own block separation.
+
+  * `:gfm` — when `false`, disables GitHub-Flavored Markdown extensions
+    (strikethrough, tables, task lists, autolinks). Default `true`.
   """
   @spec render(String.t(), pos_integer()) :: [styled_line()]
-  def render("", _max_width), do: [[{"", nil}]]
-  def render(nil, _max_width), do: [[{"", nil}]]
+  def render(content, max_width), do: render(content, max_width, [])
 
-  def render(content, max_width) when is_binary(content) and max_width > 0 do
-    case MDEx.parse_document(content) do
+  @spec render(String.t() | nil, pos_integer(), keyword()) :: [styled_line()]
+  def render("", _max_width, _opts), do: [[{"", nil}]]
+  def render(nil, _max_width, _opts), do: [[{"", nil}]]
+
+  def render(content, max_width, opts)
+      when is_binary(content) and max_width > 0 and is_list(opts) do
+    case MDEx.parse_document(content, mdex_options(opts)) do
       {:ok, document} ->
         document
-        |> process_document()
+        |> process_document(max_width)
+        |> maybe_compact(opts)
         |> wrap_styled_lines(max_width)
 
       {:error, _reason} ->
         content
         |> String.split("\n")
         |> Enum.map(fn line -> [{line, nil}] end)
+        |> maybe_compact(opts)
         |> wrap_styled_lines(max_width)
     end
   end
 
-  def render(content, _max_width) when is_binary(content), do: render(content, 80)
+  def render(content, _max_width, opts) when is_binary(content) and is_list(opts) do
+    render(content, 80, opts)
+  end
+
+  defp mdex_options(opts) do
+    if Keyword.get(opts, :gfm, true), do: @gfm_mdex_opts, else: []
+  end
+
+  defp maybe_compact(lines, opts) do
+    if Keyword.get(opts, :compact, false) do
+      Enum.reject(lines, &blank_line?/1)
+    else
+      lines
+    end
+  end
+
+  defp blank_line?([{"", nil}]), do: true
+  defp blank_line?([]), do: true
+  defp blank_line?(_), do: false
 
   @doc """
   Renders markdown content with interactive element tracking.
+
+  Same options as `render/3`. `:focused_element_id` selects which code-block
+  element gets focus styling.
   """
-  @spec render_with_elements(String.t(), pos_integer(), keyword()) :: render_result()
+  @spec render_with_elements(String.t() | nil, pos_integer(), keyword()) :: render_result()
   def render_with_elements("", _max_width, _opts) do
     %{lines: [[{"", nil}]], elements: [], content_height: 1}
   end
@@ -151,13 +218,23 @@ defmodule TermUI.Markdown do
     %{lines: [[{"", nil}]], elements: [], content_height: 1}
   end
 
-  def render_with_elements(content, max_width, opts) when is_binary(content) and max_width > 0 do
+  def render_with_elements(content, max_width, opts)
+      when is_binary(content) and max_width > 0 and is_list(opts) do
     focused_id = Keyword.get(opts, :focused_element_id)
 
-    case MDEx.parse_document(content) do
+    case MDEx.parse_document(content, mdex_options(opts)) do
       {:ok, document} ->
-        {raw_lines, elements} = process_document_with_elements(document, focused_id)
-        wrapped_lines = wrap_styled_lines(raw_lines, max_width)
+        {raw_lines, raw_elements} =
+          process_document_with_elements(document, max_width, focused_id)
+
+        {compacted_lines, elements} =
+          if Keyword.get(opts, :compact, false) do
+            apply_compact_with_elements(raw_lines, raw_elements)
+          else
+            {raw_lines, raw_elements}
+          end
+
+        wrapped_lines = wrap_styled_lines(compacted_lines, max_width)
         %{lines: wrapped_lines, elements: elements, content_height: length(wrapped_lines)}
 
       {:error, _reason} ->
@@ -165,14 +242,48 @@ defmodule TermUI.Markdown do
           content
           |> String.split("\n")
           |> Enum.map(fn line -> [{line, nil}] end)
+          |> maybe_compact(opts)
           |> wrap_styled_lines(max_width)
 
         %{lines: lines, elements: [], content_height: length(lines)}
     end
   end
 
-  def render_with_elements(content, _max_width, opts) when is_binary(content) do
+  def render_with_elements(content, _max_width, opts)
+      when is_binary(content) and is_list(opts) do
     render_with_elements(content, 80, opts)
+  end
+
+  # Strip blank rows and shift any element indices that pointed past them,
+  # so `start_line`/`end_line` remain consistent with the rendered output.
+  defp apply_compact_with_elements(raw_lines, elements) do
+    {acc_lines_rev, blanks_through_idx, _} =
+      raw_lines
+      |> Enum.with_index()
+      |> Enum.reduce({[], %{}, 0}, fn {line, idx}, {acc, acc_map, prev} ->
+        if blank_line?(line) do
+          new_count = prev + 1
+          {acc, Map.put(acc_map, idx, new_count), new_count}
+        else
+          {[line | acc], Map.put(acc_map, idx, prev), prev}
+        end
+      end)
+
+    compacted = Enum.reverse(acc_lines_rev)
+
+    adjusted_elements =
+      Enum.map(elements, fn elem ->
+        shift_start = Map.get(blanks_through_idx, elem.start_line, 0)
+        shift_end = Map.get(blanks_through_idx, elem.end_line, 0)
+
+        %{
+          elem
+          | start_line: elem.start_line - shift_start,
+            end_line: elem.end_line - shift_end
+        }
+      end)
+
+    {compacted, adjusted_elements}
   end
 
   @doc """
@@ -195,16 +306,18 @@ defmodule TermUI.Markdown do
   end
 
   # Document Processing
-  defp process_document(%MDEx.Document{nodes: nodes}) do
-    Enum.flat_map(nodes, &process_node/1)
+  defp process_document(%MDEx.Document{nodes: nodes}, max_width) do
+    Enum.flat_map(nodes, &process_node(&1, max_width))
   end
 
-  defp process_document(_), do: [[{"", nil}]]
+  defp process_document(_, _max_width), do: [[{"", nil}]]
 
-  defp process_document_with_elements(%MDEx.Document{nodes: nodes}, focused_id) do
+  defp process_document_with_elements(%MDEx.Document{nodes: nodes}, max_width, focused_id) do
     {lines, elements, _line_idx} =
       Enum.reduce(nodes, {[], [], 0}, fn node, {acc_lines, acc_elements, line_idx} ->
-        {node_lines, node_elements} = process_node_with_elements(node, line_idx, focused_id)
+        {node_lines, node_elements} =
+          process_node_with_elements(node, max_width, line_idx, focused_id)
+
         new_line_idx = line_idx + length(node_lines)
         {acc_lines ++ node_lines, acc_elements ++ node_elements, new_line_idx}
       end)
@@ -212,10 +325,11 @@ defmodule TermUI.Markdown do
     {lines, elements}
   end
 
-  defp process_document_with_elements(_, _focused_id), do: {[[{"", nil}]], []}
+  defp process_document_with_elements(_, _max_width, _focused_id), do: {[[{"", nil}]], []}
 
   defp process_node_with_elements(
          %MDEx.CodeBlock{literal: code, info: info},
+         max_width,
          line_idx,
          focused_id
        ) do
@@ -223,32 +337,14 @@ defmodule TermUI.Markdown do
     element_id = generate_element_id(code, line_idx)
     is_focused = element_id == focused_id
     border_style = if is_focused, do: @code_border_focused_style, else: @code_border_style
+    focus_hint = if is_focused, do: " [c]", else: ""
+    chars = CharacterSet.current_charset()
 
-    header =
-      if lang do
-        focus_hint = if is_focused, do: " [c]", else: ""
-
-        [
-          [
-            {"┌─ " <> lang <> focus_hint <> " ", @code_block_style},
-            {String.duplicate("─", 40 - String.length(focus_hint)), border_style}
-          ]
-        ]
-      else
-        focus_hint = if is_focused, do: " [c]", else: ""
-
-        [
-          [
-            {"┌" <> focus_hint, @code_block_style},
-            {String.duplicate("─", 44 - String.length(focus_hint)), border_style}
-          ]
-        ]
-      end
+    {header_lines, footer_lines} =
+      code_block_frame(chars, lang, focus_hint, max_width, border_style)
 
     code_lines = render_code_block(code, lang)
-    footer = [[{"└", @code_block_style}, {String.duplicate("─", 44), border_style}], [{"", nil}]]
-
-    lines = header ++ code_lines ++ footer
+    lines = header_lines ++ code_lines ++ footer_lines
 
     element = %{
       id: element_id,
@@ -262,8 +358,8 @@ defmodule TermUI.Markdown do
     {lines, [element]}
   end
 
-  defp process_node_with_elements(node, _line_idx, _focused_id) do
-    lines = process_node(node)
+  defp process_node_with_elements(node, max_width, _line_idx, _focused_id) do
+    lines = process_node(node, max_width)
     {lines, []}
   end
 
@@ -273,59 +369,82 @@ defmodule TermUI.Markdown do
     |> String.slice(0, 16)
   end
 
-  # Node Processing
-  defp process_node(%MDEx.Heading{level: 1, nodes: children}) do
+  # Header + footer rows for a fenced code block. Header always carries a
+  # trailing space before the fill dashes so the focus marker can't visually
+  # glue onto the border; corner/line glyphs come from the active charset
+  # so ASCII terminals get +/-/| instead of mojibake.
+  defp code_block_frame(chars, lang, focus_hint, max_width, border_style) do
+    label =
+      cond do
+        lang != nil ->
+          chars.tl <> chars.h_line <> " " <> lang <> focus_hint <> " "
+
+        focus_hint != "" ->
+          chars.tl <> focus_hint <> " "
+
+        true ->
+          chars.tl
+      end
+
+    header_fill = max(max_width - DisplayWidth.string_width(label), 0)
+    footer_fill = max(max_width - DisplayWidth.string_width(chars.bl), 0)
+
+    header = [
+      [{label, @code_block_style}, {String.duplicate(chars.h_line, header_fill), border_style}]
+    ]
+
+    footer = [
+      [
+        {chars.bl, @code_block_style},
+        {String.duplicate(chars.h_line, footer_fill), border_style}
+      ],
+      [{"", nil}]
+    ]
+
+    {header, footer}
+  end
+
+  # Node Processing -- every block-level type takes max_width so containers
+  # (BlockQuote, List, ListItem) can propagate it to nested blocks like
+  # code blocks, HRs, and tables that need the panel width to size their
+  # decorations.
+  defp process_node(%MDEx.Heading{level: 1, nodes: children}, _max_width) do
     content = extract_text(children)
     [[{content, @header1_style}], [{"", nil}]]
   end
 
-  defp process_node(%MDEx.Heading{level: 2, nodes: children}) do
+  defp process_node(%MDEx.Heading{level: 2, nodes: children}, _max_width) do
     content = extract_text(children)
     [[{content, @header2_style}], [{"", nil}]]
   end
 
-  defp process_node(%MDEx.Heading{level: level, nodes: children}) when level >= 3 do
+  defp process_node(%MDEx.Heading{level: level, nodes: children}, _max_width) when level >= 3 do
     content = extract_text(children)
     [[{content, @header3_style}], [{"", nil}]]
   end
 
-  defp process_node(%MDEx.Paragraph{nodes: children}) do
+  defp process_node(%MDEx.Paragraph{nodes: children}, _max_width) do
     segments = process_inline_nodes(children)
     [segments, [{"", nil}]]
   end
 
-  defp process_node(%MDEx.CodeBlock{literal: code, info: info}) do
+  defp process_node(%MDEx.CodeBlock{literal: code, info: info}, max_width) do
     lang = if info && info != "", do: String.downcase(String.trim(info)), else: nil
+    chars = CharacterSet.current_charset()
 
-    header =
-      if lang do
-        [
-          [
-            {"┌─ " <> lang <> " ", @code_block_style},
-            {String.duplicate("─", 40), @code_border_style}
-          ]
-        ]
-      else
-        [[{"┌", @code_block_style}, {String.duplicate("─", 44), @code_border_style}]]
-      end
+    {header_lines, footer_lines} =
+      code_block_frame(chars, lang, "", max_width, @code_border_style)
 
-    code_lines = render_code_block(code, lang)
-
-    footer = [
-      [{"└", @code_block_style}, {String.duplicate("─", 44), @code_border_style}],
-      [{"", nil}]
-    ]
-
-    header ++ code_lines ++ footer
+    header_lines ++ render_code_block(code, lang) ++ footer_lines
   end
 
-  defp process_node(%MDEx.Code{literal: code}) do
+  defp process_node(%MDEx.Code{literal: code}, _max_width) do
     [[{"`" <> code <> "`", @code_style}]]
   end
 
-  defp process_node(%MDEx.BlockQuote{nodes: children}) do
+  defp process_node(%MDEx.BlockQuote{nodes: children}, max_width) do
     children
-    |> Enum.flat_map(&process_node/1)
+    |> Enum.flat_map(&process_node(&1, max_width))
     |> Enum.map(fn segments ->
       case segments do
         [{text, _style} | rest] ->
@@ -337,35 +456,40 @@ defmodule TermUI.Markdown do
     end)
   end
 
-  defp process_node(%MDEx.List{list_type: :bullet, nodes: items}) do
+  defp process_node(%MDEx.List{list_type: :bullet, nodes: items}, max_width) do
     items
-    |> Enum.flat_map(fn item ->
-      process_list_item(item, "• ")
-    end)
+    |> Enum.flat_map(fn item -> process_list_item(item, "• ", max_width) end)
     |> Kernel.++([[{"", nil}]])
   end
 
-  defp process_node(%MDEx.List{list_type: :ordered, nodes: items, start: start}) do
+  defp process_node(%MDEx.List{list_type: :ordered, nodes: items, start: start}, max_width) do
     items
     |> Enum.with_index(start || 1)
-    |> Enum.flat_map(fn {item, idx} ->
-      process_list_item(item, "#{idx}. ")
-    end)
+    |> Enum.flat_map(fn {item, idx} -> process_list_item(item, "#{idx}. ", max_width) end)
     |> Kernel.++([[{"", nil}]])
   end
 
-  defp process_node(%MDEx.ListItem{nodes: children}) do
-    Enum.flat_map(children, &process_node/1)
+  defp process_node(%MDEx.ListItem{nodes: children}, max_width) do
+    Enum.flat_map(children, &process_node(&1, max_width))
   end
 
-  defp process_node(%MDEx.ThematicBreak{}) do
-    [[{"───────────────────────────────────────", @hr_style}], [{"", nil}]]
+  defp process_node(%MDEx.TaskItem{} = item, max_width) do
+    process_list_item(item, "", max_width)
   end
 
-  defp process_node(%MDEx.SoftBreak{}), do: []
-  defp process_node(%MDEx.LineBreak{}), do: [[{"", nil}]]
+  defp process_node(%MDEx.ThematicBreak{}, max_width) do
+    chars = CharacterSet.current_charset()
+    [[{String.duplicate(chars.h_line, max_width), @hr_style}], [{"", nil}]]
+  end
 
-  defp process_node(node) when is_map(node) do
+  defp process_node(%MDEx.SoftBreak{}, _max_width), do: []
+  defp process_node(%MDEx.LineBreak{}, _max_width), do: [[{"", nil}]]
+
+  defp process_node(%MDEx.Table{nodes: rows, alignments: alignments}, max_width) do
+    render_table(rows, alignments, max_width)
+  end
+
+  defp process_node(node, max_width) when is_map(node) do
     case Map.get(node, :nodes) do
       nil ->
         case Map.get(node, :literal) do
@@ -374,11 +498,170 @@ defmodule TermUI.Markdown do
         end
 
       children ->
-        Enum.flat_map(children, &process_node/1)
+        Enum.flat_map(children, &process_node(&1, max_width))
     end
   end
 
-  defp process_node(_), do: []
+  defp process_node(_, _max_width), do: []
+
+  # Table rendering. Cells are processed through the same inline pipeline
+  # as the rest of the document so bold/code/link/strikethrough inside a
+  # cell keeps its styling. Column widths use terminal-column width (so
+  # CJK and emoji align) and box glyphs come from the active charset.
+  defp render_table(rows, alignments, max_width) do
+    cell_grid =
+      Enum.map(rows, fn %MDEx.TableRow{nodes: cells} ->
+        Enum.map(cells, fn %MDEx.TableCell{nodes: inline} ->
+          segments = process_inline_nodes(inline)
+          # Width and plain text must come from the rendered segments, not a
+          # parallel extract_text/1 pass: code spans render with surrounding
+          # backticks and links can render a "(url)" suffix, so measuring the
+          # raw text would undercount every such cell and break alignment.
+          text = segments_text(segments)
+          %{text: text, segments: segments, width: DisplayWidth.string_width(text)}
+        end)
+      end)
+
+    col_widths = compute_col_widths(cell_grid)
+
+    body =
+      cond do
+        col_widths == [] ->
+          []
+
+        table_width(col_widths) > max_width ->
+          render_table_plain(cell_grid)
+
+        true ->
+          padded_alignments = pad_alignments(alignments, length(col_widths))
+          render_table_box(rows, cell_grid, col_widths, padded_alignments)
+      end
+
+    body ++ [[{"", nil}]]
+  end
+
+  defp compute_col_widths(cell_grid) do
+    ncols = cell_grid |> Enum.map(&length/1) |> Enum.max(fn -> 0 end)
+
+    if ncols == 0 do
+      []
+    else
+      for col <- 0..(ncols - 1)//1 do
+        cell_grid
+        |> Enum.map(fn row ->
+          case Enum.at(row, col) do
+            nil -> 0
+            %{width: w} -> w
+          end
+        end)
+        |> Enum.max(fn -> 0 end)
+      end
+    end
+  end
+
+  # Align MDEx's alignments list with the actual column count so trailing
+  # columns don't get silently dropped by Enum.zip in data_line.
+  defp pad_alignments(alignments, ncols) do
+    given = length(alignments)
+
+    cond do
+      given == ncols -> alignments
+      given > ncols -> Enum.take(alignments, ncols)
+      true -> alignments ++ List.duplicate(:none, ncols - given)
+    end
+  end
+
+  defp table_width(col_widths) do
+    Enum.sum(col_widths) + 3 * length(col_widths) + 1
+  end
+
+  defp render_table_plain(cell_grid) do
+    Enum.map(cell_grid, fn cells ->
+      [{Enum.map_join(cells, " | ", & &1.text), nil}]
+    end)
+  end
+
+  defp render_table_box(rows, cell_grid, col_widths, alignments) do
+    chars = CharacterSet.current_charset()
+    {header_cells, body_cell_rows} = split_table_header(cell_grid, rows)
+
+    top = border_line(chars.tl, chars.t_down, chars.tr, col_widths, chars)
+    bottom = border_line(chars.bl, chars.t_up, chars.br, col_widths, chars)
+    body_lines = Enum.map(body_cell_rows, &data_line(&1, col_widths, alignments, chars))
+
+    case {header_cells, body_cell_rows} do
+      {nil, _} ->
+        [top | body_lines] ++ [bottom]
+
+      {cells, []} ->
+        [top, data_line(cells, col_widths, alignments, chars), bottom]
+
+      {cells, _} ->
+        sep = border_line(chars.t_right, chars.cross, chars.t_left, col_widths, chars)
+        [top, data_line(cells, col_widths, alignments, chars), sep | body_lines] ++ [bottom]
+    end
+  end
+
+  defp split_table_header(cell_grid, rows) do
+    case {rows, cell_grid} do
+      {[%MDEx.TableRow{header: true} | _], [header | body]} ->
+        {header, body}
+
+      _ ->
+        {nil, cell_grid}
+    end
+  end
+
+  defp border_line(left, mid, right, col_widths, chars) do
+    fills = Enum.map_join(col_widths, mid, fn w -> String.duplicate(chars.h_line, w + 2) end)
+    [{left <> fills <> right, @code_border_style}]
+  end
+
+  defp data_line(cells, col_widths, alignments, chars) do
+    ncols = length(col_widths)
+    empty = %{text: "", segments: [], width: 0}
+
+    padded_cells =
+      (cells ++ List.duplicate(empty, max(ncols - length(cells), 0)))
+      |> Enum.take(ncols)
+
+    sep = chars.v_line
+
+    cell_blocks =
+      Enum.zip_with([padded_cells, col_widths, alignments], fn [cell, width, align] ->
+        pad_cell_segments(cell, width, align)
+      end)
+
+    middle =
+      cell_blocks
+      |> Enum.intersperse([{" " <> sep <> " ", nil}])
+      |> List.flatten()
+
+    [{sep <> " ", nil} | middle] ++ [{" " <> sep, nil}]
+  end
+
+  defp pad_cell_segments(cell, width, align) do
+    pad_len = max(width - cell.width, 0)
+
+    cond do
+      pad_len == 0 ->
+        cell.segments
+
+      align == :right ->
+        [{String.duplicate(" ", pad_len), nil} | cell.segments]
+
+      align == :center ->
+        left = div(pad_len, 2)
+        right = pad_len - left
+
+        left_pad = if left > 0, do: [{String.duplicate(" ", left), nil}], else: []
+        right_pad = if right > 0, do: [{String.duplicate(" ", right), nil}], else: []
+        left_pad ++ cell.segments ++ right_pad
+
+      true ->
+        cell.segments ++ [{String.duplicate(" ", pad_len), nil}]
+    end
+  end
 
   # Code Block Rendering
   defp render_code_block(code, lang) do
@@ -473,6 +756,11 @@ defmodule TermUI.Markdown do
     [{"`" <> code <> "`", @code_style}]
   end
 
+  defp process_inline_node(%MDEx.Strikethrough{nodes: children}) do
+    text = extract_text(children)
+    [{text, @strikethrough_style}]
+  end
+
   defp process_inline_node(%MDEx.Link{url: url, nodes: children}) do
     text = extract_text(children)
 
@@ -502,29 +790,42 @@ defmodule TermUI.Markdown do
   defp process_inline_node(_), do: []
 
   # List Processing
-  defp process_list_item(%MDEx.ListItem{nodes: children}, prefix) do
+  defp process_list_item(%MDEx.ListItem{nodes: children}, prefix, max_width) do
+    do_process_list_item(children, prefix, @list_bullet_style, max_width)
+  end
+
+  # GFM task items: the parent List passes its bullet/number prefix, but
+  # we replace it with `[x] `/`[ ] ` so the checkbox state reads at the
+  # left margin and continuation lines indent under the text, not under
+  # the bullet that would otherwise have been there.
+  defp process_list_item(%MDEx.TaskItem{checked: checked?, nodes: children}, _prefix, max_width) do
+    marker = if checked?, do: "[x] ", else: "[ ] "
+    do_process_list_item(children, marker, @task_marker_style, max_width)
+  end
+
+  defp do_process_list_item(children, prefix, prefix_style, max_width) do
     children
-    |> Enum.flat_map(&process_node/1)
+    |> Enum.flat_map(&process_node(&1, max_width))
     |> Enum.with_index()
     |> Enum.map(fn {segments, idx} ->
-      process_list_line(segments, idx, prefix)
+      process_list_line(segments, idx, prefix, prefix_style)
     end)
     |> Enum.reject(fn segments ->
       segments == [{"", nil}]
     end)
   end
 
-  defp process_list_line(segments, 0, prefix) do
+  defp process_list_line(segments, 0, prefix, prefix_style) do
     case segments do
       [{text, style} | rest] ->
-        [{prefix, @list_bullet_style}, {text, style} | rest]
+        [{prefix, prefix_style}, {text, style} | rest]
 
       [] ->
-        [{prefix, @list_bullet_style}]
+        [{prefix, prefix_style}]
     end
   end
 
-  defp process_list_line(segments, _idx, prefix) do
+  defp process_list_line(segments, _idx, prefix, _prefix_style) do
     indent = String.duplicate(" ", String.length(prefix))
 
     case segments do
@@ -544,6 +845,12 @@ defmodule TermUI.Markdown do
   defp extract_text(%{literal: text}) when is_binary(text), do: text
   defp extract_text(%{nodes: children}), do: extract_text(children)
   defp extract_text(_), do: ""
+
+  # Flatten processed inline segments back to their visible text. Used by the
+  # table renderer so the measured width matches exactly what is drawn.
+  defp segments_text(segments) do
+    Enum.map_join(segments, fn {text, _style} -> text end)
+  end
 
   # Segment Merging
   defp merge_adjacent_segments([]), do: []

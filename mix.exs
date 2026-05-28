@@ -79,6 +79,15 @@ defmodule TermUI.MixProject do
       # Syntax highlighting for code blocks
       {:makeup, "~> 1.1"},
       {:makeup_elixir, "~> 1.0"},
+      {:makeup_eex, "~> 2.0"},
+      {:makeup_html, "~> 0.2"},
+      {:makeup_css, "~> 0.2"},
+      {:makeup_json, "~> 1.0"},
+      {:makeup_diff, "~> 0.1"},
+      {:makeup_ts, "~> 0.2"},
+      {:makeup_sql, "~> 0.1"},
+      {:makeup_c, "~> 0.1"},
+      {:makeup_rust, "~> 0.3"},
 
       # LLM usage rules
       {:usage_rules, "~> 0.1", only: :dev, runtime: false}

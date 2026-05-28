@@ -13,6 +13,7 @@ defmodule TermUI.Runtime.NodeRenderer do
   alias TermUI.Renderer.Buffer
   alias TermUI.Renderer.BufferManager
   alias TermUI.Renderer.Cell
+  alias TermUI.Renderer.DisplayWidth
   alias TermUI.Renderer.Style
 
   # Dialyzer: Functions with unmatched return values
@@ -291,18 +292,19 @@ defmodule TermUI.Runtime.NodeRenderer do
     render_text(to_string(content), buffer, row, col, style)
   end
 
+  # Delegate to Buffer.write_string so wide characters (CJK, emoji) advance the
+  # cursor by their display width (2) and write a wide_placeholder cell at the
+  # right half. Using grapheme count for advancement previously caused
+  # everything to the right of an emoji in a horizontal stack to shift left by
+  # one physical column, misaligning table borders.
+  #
+  # Return the intrinsic display width of the line, not the columns actually
+  # written: Buffer.write_string clips when col + width exceeds the buffer,
+  # but parent layouts need the unclipped width so siblings don't get placed
+  # back inside the visible region on top of clipped content.
   defp render_line(line, buffer, row, col, style) do
-    graphemes = String.graphemes(line)
-    width = length(graphemes)
-
-    graphemes
-    |> Enum.with_index()
-    |> Enum.each(fn {char, idx} ->
-      cell = create_cell(char, style)
-      Buffer.set_cell(buffer, row, col + idx, cell)
-    end)
-
-    width
+    Buffer.write_string(buffer, row, col, line, style: style)
+    DisplayWidth.string_width(line)
   end
 
   # Children rendering

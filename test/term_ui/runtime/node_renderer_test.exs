@@ -36,6 +36,45 @@ defmodule TermUI.Runtime.NodeRendererTest do
       assert Buffer.get_cell(buffer, 1, 1).char == "L"
       assert Buffer.get_cell(buffer, 2, 1).char == "L"
     end
+
+    test "wide characters advance by display width and emit a placeholder cell", %{bm: bm} do
+      # ✅ is double-width: the primary cell goes at col 1, a wide_placeholder
+      # at col 2, and the next grapheme (space) lands at col 3. The reported
+      # width is 4 (2 for the emoji + 1 space + 1 'a'), not the grapheme
+      # count of 3. Previously this rendered as three single-width cells
+      # which silently truncated the table border in markdown rows.
+      {width, height} = NodeRenderer.render_to_buffer({:text, "✅ a"}, bm, 1, 1)
+
+      assert {width, height} == {4, 1}
+
+      buffer = BufferManager.get_current_buffer(bm)
+      primary = Buffer.get_cell(buffer, 1, 1)
+      placeholder = Buffer.get_cell(buffer, 1, 2)
+
+      assert primary.char == "✅"
+      assert primary.width == 2
+      refute primary.wide_placeholder
+      assert placeholder.wide_placeholder
+      assert Buffer.get_cell(buffer, 1, 3).char == " "
+      assert Buffer.get_cell(buffer, 1, 4).char == "a"
+    end
+
+    test "horizontal stack places siblings past a wide-char child correctly", %{bm: bm} do
+      # The scrollback markdown table rows are exactly this shape: an emoji
+      # cell horizontally stacked with a separator + the next cell. If the
+      # stack advances by grapheme count, the separator lands at col 2 (where
+      # the right half of ✅ lives) instead of col 3, shifting every column
+      # to the right of an emoji by one.
+      tree = {:row, [], [{:text, "✅"}, {:text, " | next"}]}
+
+      NodeRenderer.render_to_buffer(tree, bm, 1, 1)
+
+      buffer = BufferManager.get_current_buffer(bm)
+      assert Buffer.get_cell(buffer, 1, 1).char == "✅"
+      assert Buffer.get_cell(buffer, 1, 2).wide_placeholder
+      assert Buffer.get_cell(buffer, 1, 3).char == " "
+      assert Buffer.get_cell(buffer, 1, 4).char == "|"
+    end
   end
 
   describe "viewport rendering" do
