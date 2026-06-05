@@ -435,11 +435,12 @@ defmodule TermUI.Runtime.NodeRenderer do
     Cell.new(char)
   end
 
-  defp create_cell(char, %Style{fg: fg, bg: bg, attrs: attrs}) do
+  defp create_cell(char, %Style{fg: fg, bg: bg, attrs: attrs, hyperlink: hyperlink}) do
     opts = []
     opts = if fg && fg != :default, do: [{:fg, fg} | opts], else: opts
     opts = if bg && bg != :default, do: [{:bg, bg} | opts], else: opts
     opts = if MapSet.size(attrs) > 0, do: [{:attrs, MapSet.to_list(attrs)} | opts], else: opts
+    opts = if hyperlink, do: [{:hyperlink, hyperlink} | opts], else: opts
     Cell.new(char, opts)
   end
 

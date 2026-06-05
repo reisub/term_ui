@@ -43,7 +43,8 @@ defmodule TermUI.Renderer.Cell do
           bg: color(),
           attrs: MapSet.t(attribute()),
           width: 1 | 2,
-          wide_placeholder: boolean()
+          wide_placeholder: boolean(),
+          hyperlink: String.t() | nil
         }
 
   defstruct char: " ",
@@ -51,9 +52,16 @@ defmodule TermUI.Renderer.Cell do
             bg: :default,
             attrs: MapSet.new(),
             width: 1,
-            wide_placeholder: false
+            wide_placeholder: false,
+            hyperlink: nil
 
   @valid_attributes [:bold, :dim, :italic, :underline, :blink, :reverse, :hidden, :strikethrough]
+
+  # OSC 8 hyperlink targets are restricted to these schemes so untrusted markdown
+  # (LLM/tool output) can't smuggle a dangerous target (e.g. "javascript:",
+  # "file:") or break the emit with control bytes. Anything else becomes nil.
+  @allowed_url_schemes ~w(http https mailto tel)
+  @max_url_length 4096
 
   @named_colors [
     :black,
@@ -98,7 +106,8 @@ defmodule TermUI.Renderer.Cell do
       bg: validate_color!(bg),
       attrs: attrs |> Enum.map(&validate_attribute!/1) |> MapSet.new(),
       width: calculate_width(sanitized),
-      wide_placeholder: false
+      wide_placeholder: false,
+      hyperlink: sanitize_url(Keyword.get(opts, :hyperlink))
     }
   end
 
@@ -115,7 +124,8 @@ defmodule TermUI.Renderer.Cell do
       bg: primary.bg,
       attrs: primary.attrs,
       width: 0,
-      wide_placeholder: true
+      wide_placeholder: true,
+      hyperlink: primary.hyperlink
     }
   end
 
@@ -187,7 +197,8 @@ defmodule TermUI.Renderer.Cell do
       a.bg == b.bg and
       MapSet.equal?(a.attrs, b.attrs) and
       a.width == b.width and
-      a.wide_placeholder == b.wide_placeholder
+      a.wide_placeholder == b.wide_placeholder and
+      a.hyperlink == b.hyperlink
   end
 
   @doc """
@@ -299,6 +310,34 @@ defmodule TermUI.Renderer.Cell do
   defp validate_attribute!(invalid) do
     raise ArgumentError,
           "Invalid attribute: #{inspect(invalid)}. Valid attributes: #{inspect(@valid_attributes)}"
+  end
+
+  # Sanitize an OSC 8 hyperlink URL. Strips control bytes (which would break or
+  # escape the OSC 8 sequence), enforces a known scheme allowlist, and caps the
+  # length. Returns a clean URL or nil. Kept separate from sanitize_char/1, whose
+  # escape-stripping would mangle legitimate URL bytes.
+  defp sanitize_url(nil), do: nil
+
+  defp sanitize_url(url) when is_binary(url) do
+    cleaned =
+      url
+      |> String.replace(~r/[\x00-\x1F\x7F]/, "")
+      |> String.trim()
+
+    if cleaned != "" and byte_size(cleaned) <= @max_url_length and allowed_url?(cleaned) do
+      cleaned
+    else
+      nil
+    end
+  end
+
+  defp sanitize_url(_), do: nil
+
+  defp allowed_url?(url) do
+    case String.split(url, ":", parts: 2) do
+      [scheme, _rest] -> String.downcase(scheme) in @allowed_url_schemes
+      _ -> false
+    end
   end
 
   # Sanitize character to prevent escape sequence injection

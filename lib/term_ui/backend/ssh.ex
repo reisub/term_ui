@@ -291,7 +291,10 @@ defmodule TermUI.Backend.SSH do
     # Render with style delta tracking
     {iodata, new_style, last_pos} =
       Enum.reduce(sorted, {[], state.current_style, state.cursor_position}, fn
-        {{row, col}, {char, fg, bg, attrs}}, {acc, prev_style, prev_pos} ->
+        {{row, col}, cell_data}, {acc, prev_style, prev_pos} ->
+          # SSH does not emit OSC 8 hyperlinks yet, so the target is dropped.
+          {char, fg, bg, attrs, _hyperlink} = TermUI.Backend.normalize_cell(cell_data)
+
           # Cursor movement — skip if already at the right position
           move_seq = cursor_move_sequence(prev_pos, {row, col})
 

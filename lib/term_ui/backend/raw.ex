@@ -794,23 +794,37 @@ defmodule TermUI.Backend.Raw do
   end
 
   # Renders a single contiguous run. Emits one cursor position at the start,
-  # then for each cell: style delta (if changed) + character.
+  # then for each cell: style delta (if changed) + OSC 8 hyperlink transition (if
+  # changed) + character. Any open hyperlink is closed at the end of the run so it
+  # never leaks into the next run, the next frame, or the shell prompt.
   defp render_single_run([{{row, col}, _} | _] = run, cursor_pos, style) do
     # Position cursor at run start
     cursor_output = cursor_move_output(cursor_pos, {row, col})
 
-    # Stream characters with inline style changes
-    {chars_output, end_col, end_style} =
-      Enum.reduce(run, {[], col, style}, fn {{_row, _col}, {char, fg, bg, attrs}},
-                                            {out_acc, cur_col, cur_style} ->
+    # Stream characters with inline style + hyperlink changes. The hyperlink
+    # starts unset each run (per-run isolation), so it is not threaded in.
+    {chars_output, end_col, end_style, end_link} =
+      Enum.reduce(run, {[], col, style, nil}, fn {{_row, _col}, cell_data},
+                                                 {out_acc, cur_col, cur_style, cur_link} ->
+        {char, fg, bg, attrs, link} = TermUI.Backend.normalize_cell(cell_data)
         new_style = %{fg: fg, bg: bg, attrs: normalize_attrs(attrs)}
         style_output = style_delta_output(cur_style, new_style)
+        link_output = hyperlink_transition(cur_link, link)
 
-        {[out_acc, style_output, char], cur_col + 1, new_style}
+        {[out_acc, style_output, link_output, char], cur_col + 1, new_style, link}
       end)
 
-    {[cursor_output, chars_output], {row, end_col}, end_style}
+    link_close = if end_link, do: ANSI.hyperlink_close(), else: []
+
+    {[cursor_output, chars_output, link_close], {row, end_col}, end_style}
   end
+
+  # OSC 8 hyperlink transition between two adjacent cells. Emitting an open
+  # sequence with a new target implicitly replaces any active one; a nil target
+  # closes the link.
+  defp hyperlink_transition(link, link), do: []
+  defp hyperlink_transition(_current, nil), do: ANSI.hyperlink_close()
+  defp hyperlink_transition(_current, url), do: ANSI.hyperlink_open(url)
 
   # Normalizes attributes to a sorted list for consistent comparison.
   #

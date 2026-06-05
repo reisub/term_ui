@@ -372,4 +372,34 @@ defmodule TermUI.Renderer.StyleTest do
       refute Style.equal?(s1, s2)
     end
   end
+
+  describe "hyperlink (OSC 8)" do
+    test "hyperlink/2 sets and clears the target" do
+      assert Style.new() |> Style.hyperlink("https://a.co") |> Map.fetch!(:hyperlink) ==
+               "https://a.co"
+
+      assert Style.new(hyperlink: "https://a.co")
+             |> Style.hyperlink(nil)
+             |> Map.fetch!(:hyperlink) == nil
+    end
+
+    test "merge/2 lets the override hyperlink win, else keeps the base" do
+      base = Style.new(hyperlink: "https://base.co")
+
+      assert Style.merge(base, Style.new(hyperlink: "https://over.co")).hyperlink ==
+               "https://over.co"
+
+      assert Style.merge(base, Style.new()).hyperlink == "https://base.co"
+    end
+
+    test "to_cell/2 carries the hyperlink onto the cell (even a space)" do
+      cell = Style.new() |> Style.hyperlink("https://a.co") |> Style.to_cell(" ")
+      assert cell.hyperlink == "https://a.co"
+    end
+
+    test "a hyperlink-only style is not empty and factors into equality" do
+      refute Style.empty?(Style.new(hyperlink: "https://a.co"))
+      refute Style.equal?(Style.new(hyperlink: "https://a.co"), Style.new())
+    end
+  end
 end

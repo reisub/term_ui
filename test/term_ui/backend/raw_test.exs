@@ -8,6 +8,8 @@ defmodule TermUI.Backend.RawTest do
 
   use ExUnit.Case, async: true
 
+  import ExUnit.CaptureIO
+
   alias TermUI.Backend.Raw
 
   describe "module structure" do
@@ -542,6 +544,62 @@ defmodule TermUI.Backend.RawTest do
 
       {:ok, state4} = Raw.show_cursor(state3)
       assert state4.optimize_cursor == false
+    end
+  end
+
+  describe "draw_cells/2 OSC 8 hyperlinks" do
+    @url "https://example.com"
+
+    defp draw(cells) do
+      state = %Raw{cursor_position: nil, current_style: nil}
+      capture_io(fn -> Raw.draw_cells(state, cells) end)
+    end
+
+    test "wraps a run of hyperlinked cells in OSC 8 open/close" do
+      out =
+        draw([
+          {{1, 1}, {"a", 81, :default, [:underline], @url}},
+          {{1, 2}, {"b", 81, :default, [:underline], @url}}
+        ])
+
+      assert out =~ "\e]8;id="
+      assert String.contains?(out, ";#{@url}\e\\")
+      # The link is closed at the end of the run so it never leaks to later output.
+      assert String.ends_with?(out, "\e]8;;\e\\")
+    end
+
+    test "closes the link before a following non-hyperlink cell" do
+      out =
+        draw([
+          {{1, 1}, {"a", 81, :default, [:underline], @url}},
+          {{1, 2}, {"c", :default, :default, [], nil}}
+        ])
+
+      # open ... "a" ... close ... "c"
+      assert out =~ ~r/\e\]8;id=\d+;#{Regex.escape(@url)}\e\\a.*\e\]8;;\e\\c/s
+    end
+
+    test "emits no OSC 8 when no cell carries a hyperlink (4-tuple tolerated)" do
+      out =
+        draw([
+          {{1, 1}, {"a", :default, :default, []}},
+          {{1, 2}, {"b", :default, :default, []}}
+        ])
+
+      refute out =~ "\e]8;"
+    end
+
+    test "switches hyperlink target between adjacent cells" do
+      other = "https://other.test"
+
+      out =
+        draw([
+          {{1, 1}, {"a", 81, :default, [], @url}},
+          {{1, 2}, {"b", 81, :default, [], other}}
+        ])
+
+      assert String.contains?(out, ";#{@url}\e\\")
+      assert String.contains?(out, ";#{other}\e\\")
     end
   end
 

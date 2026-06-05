@@ -100,11 +100,17 @@ defmodule TermUI.Backend do
   - `fg` - Foreground color
   - `bg` - Background color
   - `attrs` - Style attributes (`:bold`, `:underline`, etc.)
+  - `hyperlink` - Optional OSC 8 hyperlink target (URL string) or `nil`
 
-  This is a simplified representation for backend communication. The full
-  `TermUI.Renderer.Cell` struct is used internally by the renderer.
+  The 4-tuple form (without `hyperlink`) is still accepted; backends treat a
+  missing fifth element as `nil`. This is a simplified representation for backend
+  communication. The full `TermUI.Renderer.Cell` struct is used internally by the
+  renderer.
   """
-  @type cell :: {char :: String.t(), fg :: color(), bg :: color(), attrs :: [atom()]}
+  @type cell ::
+          {char :: String.t(), fg :: color(), bg :: color(), attrs :: [atom()]}
+          | {char :: String.t(), fg :: color(), bg :: color(), attrs :: [atom()],
+             hyperlink :: String.t() | nil}
 
   @typedoc """
   Input event from the terminal.
@@ -271,4 +277,18 @@ defmodule TermUI.Backend do
   """
   @callback poll_event(state(), timeout :: non_neg_integer()) ::
               {:ok, event(), state()} | {:timeout, state()} | {:error, reason :: term(), state()}
+
+  @doc """
+  Canonicalizes a backend cell tuple to the 5-element form
+  `{char, fg, bg, attrs, hyperlink}`.
+
+  Accepts the legacy 4-tuple (hyperlink defaults to `nil`) so callers passing
+  bare 4-tuples keep working. Backends that don't support a given feature (e.g.
+  OSC 8 hyperlinks) pattern-match and ignore the trailing element rather than
+  re-implementing this shim.
+  """
+  @spec normalize_cell(cell()) ::
+          {String.t(), color(), color(), [atom()], String.t() | nil}
+  def normalize_cell({char, fg, bg, attrs}), do: {char, fg, bg, attrs, nil}
+  def normalize_cell({char, fg, bg, attrs, hyperlink}), do: {char, fg, bg, attrs, hyperlink}
 end

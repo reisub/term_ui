@@ -32,12 +32,14 @@ defmodule TermUI.Renderer.Style do
   @type t :: %__MODULE__{
           fg: color() | nil,
           bg: color() | nil,
-          attrs: MapSet.t(attribute())
+          attrs: MapSet.t(attribute()),
+          hyperlink: String.t() | nil
         }
 
   defstruct fg: nil,
             bg: nil,
-            attrs: MapSet.new()
+            attrs: MapSet.new(),
+            hyperlink: nil
 
   @valid_attributes [:bold, :dim, :italic, :underline, :blink, :reverse, :hidden, :strikethrough]
 
@@ -91,7 +93,8 @@ defmodule TermUI.Renderer.Style do
     %__MODULE__{
       fg: validate_color!(fg),
       bg: validate_color!(bg),
-      attrs: attrs |> Enum.map(&validate_attribute!/1) |> MapSet.new()
+      attrs: attrs |> Enum.map(&validate_attribute!/1) |> MapSet.new(),
+      hyperlink: Keyword.get(opts, :hyperlink)
     }
   end
 
@@ -202,6 +205,23 @@ defmodule TermUI.Renderer.Style do
   end
 
   @doc """
+  Sets an OSC 8 hyperlink target on the style.
+
+  Text rendered with this style becomes a clickable hyperlink in terminals that
+  support OSC 8. The URL is sanitized when it reaches a cell (see
+  `TermUI.Renderer.Cell`); pass `nil` to clear it.
+
+  ## Examples
+
+      iex> Style.new() |> Style.hyperlink("https://example.com")
+      %Style{fg: nil, bg: nil, attrs: MapSet.new(), hyperlink: "https://example.com"}
+  """
+  @spec hyperlink(t(), String.t() | nil) :: t()
+  def hyperlink(%__MODULE__{} = style, url) when is_binary(url) or is_nil(url) do
+    %{style | hyperlink: url}
+  end
+
+  @doc """
   Merges two styles, with the second style overriding the first.
 
   Only non-nil values from the override style replace values in the base.
@@ -224,7 +244,8 @@ defmodule TermUI.Renderer.Style do
     %__MODULE__{
       fg: override.fg || base.fg,
       bg: override.bg || base.bg,
-      attrs: MapSet.union(base.attrs, override.attrs)
+      attrs: MapSet.union(base.attrs, override.attrs),
+      hyperlink: override.hyperlink || base.hyperlink
     }
   end
 
@@ -250,7 +271,8 @@ defmodule TermUI.Renderer.Style do
     Cell.new(char,
       fg: style.fg || :default,
       bg: style.bg || :default,
-      attrs: MapSet.to_list(style.attrs)
+      attrs: MapSet.to_list(style.attrs),
+      hyperlink: style.hyperlink
     )
   end
 
@@ -273,7 +295,8 @@ defmodule TermUI.Renderer.Style do
       char: cell.char,
       fg: style.fg || cell.fg,
       bg: style.bg || cell.bg,
-      attrs: MapSet.union(cell.attrs, style.attrs)
+      attrs: MapSet.union(cell.attrs, style.attrs),
+      hyperlink: style.hyperlink || cell.hyperlink
     }
   end
 
@@ -290,7 +313,8 @@ defmodule TermUI.Renderer.Style do
   """
   @spec empty?(t()) :: boolean()
   def empty?(%__MODULE__{} = style) do
-    is_nil(style.fg) and is_nil(style.bg) and MapSet.size(style.attrs) == 0
+    is_nil(style.fg) and is_nil(style.bg) and MapSet.size(style.attrs) == 0 and
+      is_nil(style.hyperlink)
   end
 
   @doc """
@@ -307,7 +331,8 @@ defmodule TermUI.Renderer.Style do
   """
   @spec equal?(t(), t()) :: boolean()
   def equal?(%__MODULE__{} = a, %__MODULE__{} = b) do
-    a.fg == b.fg and a.bg == b.bg and MapSet.equal?(a.attrs, b.attrs)
+    a.fg == b.fg and a.bg == b.bg and MapSet.equal?(a.attrs, b.attrs) and
+      a.hyperlink == b.hyperlink
   end
 
   @doc """

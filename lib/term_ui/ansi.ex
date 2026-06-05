@@ -58,10 +58,15 @@ defmodule TermUI.ANSI do
              enable_sgr_mouse: 0,
              disable_sgr_mouse: 0,
              enter_alternate_screen: 0,
-             leave_alternate_screen: 0}
+             leave_alternate_screen: 0,
+             hyperlink_open: 1,
+             hyperlink_close: 0}
 
   # Escape sequence constants
   @csi "\e["
+  # OSC introducer and ST (string terminator) for OSC 8 hyperlinks.
+  @osc "\e]"
+  @st "\e\\"
 
   # Client API
 
@@ -651,6 +656,38 @@ defmodule TermUI.ANSI do
   """
   @spec leave_alternate_screen() :: iolist()
   def leave_alternate_screen, do: [@csi, "?1049l"]
+
+  # =============================================================================
+  # Hyperlinks (OSC 8)
+  # =============================================================================
+
+  @doc """
+  Generates an OSC 8 hyperlink open sequence for `url`.
+
+  Subsequent text becomes a clickable link in terminals that support OSC 8. A
+  stable `id` (derived from the URL) lets terminals group a link that rendering
+  split across several runs. Emit `hyperlink_close/0` to end the link.
+
+  ## Examples
+
+      iex> TermUI.ANSI.hyperlink_open("https://x.co") |> IO.iodata_to_binary()
+      "\\e]8;id=#{:erlang.phash2("https://x.co")};https://x.co\\e\\\\"
+  """
+  @spec hyperlink_open(String.t()) :: iolist()
+  def hyperlink_open(url) when is_binary(url) do
+    [@osc, "8;id=", Integer.to_string(:erlang.phash2(url)), ";", url, @st]
+  end
+
+  @doc """
+  Generates the OSC 8 sequence that closes any open hyperlink.
+
+  ## Examples
+
+      iex> TermUI.ANSI.hyperlink_close() |> IO.iodata_to_binary()
+      "\\e]8;;\\e\\\\"
+  """
+  @spec hyperlink_close() :: iolist()
+  def hyperlink_close, do: [@osc, "8;;", @st]
 
   # =============================================================================
   # Private helpers

@@ -503,4 +503,39 @@ defmodule TermUI.Renderer.CellTest do
       assert Cell.width(cell) == 2
     end
   end
+
+  describe "hyperlink (OSC 8)" do
+    test "stores an allowed http(s)/mailto/tel target" do
+      for url <- ["https://a.co", "http://a.co", "mailto:x@a.co", "tel:+15551234"] do
+        assert Cell.new("a", hyperlink: url).hyperlink == url
+      end
+    end
+
+    test "drops disallowed schemes and scheme-less targets" do
+      for url <- ["javascript:alert(1)", "file:///etc/passwd", "/relative", "#anchor", "ftp://h"] do
+        assert Cell.new("a", hyperlink: url).hyperlink == nil
+      end
+    end
+
+    test "strips control bytes that could break the OSC 8 sequence" do
+      # An embedded ESC/BEL must never survive into the hyperlink target.
+      cell = Cell.new("a", hyperlink: "https://a.co/\e]8;;\a")
+      refute cell.hyperlink =~ "\e"
+      refute cell.hyperlink =~ "\a"
+    end
+
+    test "defaults to nil and is part of equality" do
+      assert Cell.new("a").hyperlink == nil
+      a = Cell.new("a", fg: :red, hyperlink: "https://a.co")
+      b = Cell.new("a", fg: :red, hyperlink: "https://a.co")
+      c = Cell.new("a", fg: :red, hyperlink: "https://b.co")
+      assert Cell.equal?(a, b)
+      refute Cell.equal?(a, c)
+    end
+
+    test "wide placeholder inherits the primary cell's hyperlink" do
+      primary = Cell.new("世", hyperlink: "https://a.co")
+      assert Cell.wide_placeholder(primary).hyperlink == "https://a.co"
+    end
+  end
 end

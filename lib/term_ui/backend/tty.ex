@@ -912,7 +912,9 @@ defmodule TermUI.Backend.TTY do
           {TermUI.Backend.color(), TermUI.Backend.color(), [atom()]} | nil,
           t()
         ) :: {{TermUI.Backend.color(), TermUI.Backend.color(), [atom()]}, iodata()}
-  defp render_cell_with_delta({char, fg, bg, attrs}, cur_style, state) do
+  # The TTY backend does not emit OSC 8 hyperlinks yet, so the target is dropped.
+  defp render_cell_with_delta(cell_data, cur_style, state) do
+    {char, fg, bg, attrs, _hyperlink} = TermUI.Backend.normalize_cell(cell_data)
     new_style = {fg, bg, attrs}
 
     # Only output SGR if style changed

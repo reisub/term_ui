@@ -1318,10 +1318,7 @@ defmodule TermUI.Runtime do
         cells_in_row =
           buffer_row
           |> Enum.with_index(1)
-          |> Enum.filter(fn {%TermUI.Renderer.Cell{} = cell, _col} ->
-            # Include non-space characters OR spaces with non-default background
-            cell.char != " " or (cell.bg != nil and cell.bg != :default)
-          end)
+          |> Enum.filter(fn {%TermUI.Renderer.Cell{} = cell, _col} -> displayable_cell?(cell) end)
           |> Enum.flat_map(fn {cell, col} -> cell_to_backend_tuple(cell, row, col) end)
 
         cells_in_row ++ acc
@@ -1369,12 +1366,12 @@ defmodule TermUI.Runtime do
 
         if prev_displayable and not cur_displayable do
           # Previous had content, current is empty — need to clear
-          [{{row, col}, {" ", :default, :default, []}} | acc]
+          [{{row, col}, {" ", :default, :default, [], nil}} | acc]
         else
           if prev_displayable and cur_displayable and
                prev.bg != nil and prev.bg != :default and cur.char == " " do
             # Previous had colored bg, current is space — clear to remove bg
-            [{{row, col}, {" ", :default, :default, []}} | acc]
+            [{{row, col}, {" ", :default, :default, [], nil}} | acc]
           else
             acc
           end
@@ -1399,7 +1396,7 @@ defmodule TermUI.Runtime do
   defp diff_row_cells([], [prev | prev_rest], row, col, acc) do
     acc =
       if displayable_cell?(prev) do
-        [{{row, col}, {" ", :default, :default, []}} | acc]
+        [{{row, col}, {" ", :default, :default, [], nil}} | acc]
       else
         acc
       end
@@ -1407,19 +1404,24 @@ defmodule TermUI.Runtime do
     diff_row_cells([], prev_rest, row, col + 1, acc)
   end
 
+  # A cell is worth drawing if it has a visible glyph, a non-default background,
+  # or an OSC 8 hyperlink. The hyperlink case matters because a multi-word link's
+  # inter-word space cells carry the link target; dropping them would punch
+  # non-clickable gaps into the link and split its OSC 8 run.
   defp displayable_cell?(%Cell{} = cell) do
-    cell.char != " " or (cell.bg != nil and cell.bg != :default)
+    cell.char != " " or (cell.bg != nil and cell.bg != :default) or cell.hyperlink != nil
   end
 
-  # Converts a Cell struct to the backend format: {{row, col}, {char, fg, bg, attrs}}
+  # Converts a Cell struct to the backend format:
+  # {{row, col}, {char, fg, bg, attrs, hyperlink}}
   # Skips wide placeholder cells (they're part of wide characters)
   # Returns [] for skipped cells to filter them out
   defp cell_to_backend_tuple(%Cell{wide_placeholder: true}, _row, _col), do: []
 
-  defp cell_to_backend_tuple(%Cell{char: char, fg: fg, bg: bg, attrs: attrs}, row, col) do
+  defp cell_to_backend_tuple(%Cell{char: char, fg: fg, bg: bg, attrs: attrs} = cell, row, col) do
     # Convert MapSet attrs to list for backend format
     attrs_list = MapSet.to_list(attrs)
-    [{{row, col}, {char, normalize_color(fg), normalize_color(bg), attrs_list}}]
+    [{{row, col}, {char, normalize_color(fg), normalize_color(bg), attrs_list, cell.hyperlink}}]
   end
 
   # Normalizes colors to ensure :default instead of nil
