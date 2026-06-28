@@ -66,6 +66,25 @@ defmodule TermUI.Terminal.MouseTest do
     end
   end
 
+  describe "mouse event parsing - move (buttonless motion)" do
+    test "parses bare pointer motion as :move with no button" do
+      # Button code 35 = motion flag (32) + "no button" (3). This is a hover:
+      # the pointer moved with no button held. It must NOT be reported as a
+      # drag — drags carry a real button (0/1/2).
+      {events, remaining} = EscapeParser.parse("\e[<35;20;30M")
+      assert remaining == <<>>
+      assert [%Event.Mouse{action: :move, button: nil, x: 19, y: 29}] = events
+    end
+
+    test "parses modified pointer motion as :move and keeps modifiers" do
+      # Button code 51 = motion (32) + ctrl (16) + "no button" (3).
+      {events, remaining} = EscapeParser.parse("\e[<51;8;4M")
+      assert remaining == <<>>
+      assert [%Event.Mouse{action: :move, button: nil, x: 7, y: 3, modifiers: modifiers}] = events
+      assert :ctrl in modifiers
+    end
+  end
+
   describe "mouse event parsing - modifiers" do
     test "parses Shift+click" do
       # Button code 4 = shift modifier

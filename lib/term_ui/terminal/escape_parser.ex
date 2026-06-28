@@ -387,6 +387,10 @@ defmodule TermUI.Terminal.EscapeParser do
     cond do
       is_scroll and button_code == 0 -> {:scroll_up, nil}
       is_scroll and button_code == 1 -> {:scroll_down, nil}
+      # Motion with "no button" (button_code 3) is a bare hover, not a drag.
+      # Drags carry a real button (0/1/2); reporting hover as :drag/button: nil
+      # means consumers watching for :move never see pointer motion.
+      is_motion and button_code == 3 -> {:move, nil}
       is_motion and terminator == :press -> {:drag, decode_button(button_code)}
       terminator == :release -> {:release, :left}
       true -> {:press, decode_button(button_code)}
